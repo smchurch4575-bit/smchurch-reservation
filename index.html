@@ -164,7 +164,10 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
 .okmsg{padding:12px 14px;border-radius:10px;background:var(--accent-soft);color:var(--ink);font-weight:500}
 .dgrp{font-family:var(--serif);font-size:18px;font-weight:700;margin:10px 0 4px}
 .tlbox>summary{cursor:pointer;font-family:var(--serif);font-size:20px;font-weight:700;min-height:46px;display:flex;align-items:center}
+.tlbox{display:block}
 .tlbox[open]>summary{margin-bottom:10px}
+.tlbox>div:not(.tl){margin-bottom:12px}
+.tlbox .tl{max-width:100%}
 .tab[aria-pressed="true"]{background:linear-gradient(135deg,var(--accent),var(--accent2));color:var(--accent-ink);box-shadow:var(--lift)}
 .st-tools{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center}
 .chk{display:inline-flex;align-items:center;gap:10px;font-size:16px;font-weight:500;min-height:46px;cursor:pointer}
@@ -421,9 +424,21 @@ form{display:grid;gap:18px;margin:0}
   </div>
 </div>
 
+<div class="overlay" id="gate" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+    <h2 id="gateTitle" style="font-family:var(--serif);font-size:24px">성도 전용 예약</h2>
+    <p class="hint">교회에서 안내받은 <strong>접속 암호</strong>를 입력해 주세요. 한 번 입력하면 이 기기에서는 다시 묻지 않습니다.</p>
+    <form id="gateForm" novalidate>
+      <div class="field"><label for="gateCode">접속 암호</label><input class="ctl" type="password" id="gateCode" autocomplete="off" autocapitalize="off"></div>
+      <p class="msg" id="gateMsg" role="alert" hidden></p>
+      <button type="submit" class="btn btn-primary btn-lg" id="gateBtn">입장하기</button>
+    </form>
+  </div>
+</div>
+
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="config.js"></script>
+<script>document.write('<script src="config.js?t='+Date.now()+'"><\/script>');</script>
 <script>
 (function(){
 'use strict';
@@ -564,18 +579,21 @@ const POLL_MS=20000;
 let MINE={};try{MINE=JSON.parse(store('ieum-mine')||'{}')||{};}catch(e){MINE={};}
 const saveMine=()=>{store('ieum-mine',JSON.stringify(MINE));};
 let pollTimer=null,loadSeq=0,failCount=0;
-async function api(action,payload,method){
+let CODE=store('ieum-code')||'';
+async function api(action,payload){
   const ctl=new AbortController(),to=setTimeout(()=>ctl.abort(),25000);
   try{
-    let res;
-    if(method==='GET'){
-      const q=new URLSearchParams(Object.assign({action:action,t:String(Date.now())},payload||{}));
-      res=await fetch(API_URL+'?'+q.toString(),{signal:ctl.signal});
-    }else{
-      res=await fetch(API_URL,{method:'POST',body:JSON.stringify(Object.assign({action:action},payload||{})),signal:ctl.signal});
-    }
-    return await res.json();
+    const res=await fetch(API_URL,{method:'POST',body:JSON.stringify(Object.assign({action:action,code:CODE},payload||{})),signal:ctl.signal});
+    const j=await res.json();
+    if(j&&j.error==='need_code'){const had=!!CODE;CODE='';store('ieum-code','');showGate(had?j.message:'');}
+    return j;
   }finally{clearTimeout(to);}
+}
+function showGate(msg){
+  $('gate').hidden=false;
+  const m=$('gateMsg');m.hidden=!msg;m.textContent=msg||'';
+  $('gateCode').value='';
+  setTimeout(()=>{try{$('gateCode').focus();}catch(e){}},50);
 }
 let toastTimer=null;
 try{const sp=sessionStorage.getItem('ieum-pin');if(sp)S.pin=sp;}catch(e){}
@@ -611,7 +629,8 @@ function renderHead(){
   let t='',warn=false;
   if(S.status==='loading')t='예약 현황을 불러오는 중입니다…';
   else if(S.status==='offline'){
-    t=S.why==='noapi'
+    t=S.why==='code'?''
+      :S.why==='noapi'
       ?'예약 서버 주소가 아직 설정되지 않았습니다. config.js 파일에 서버 주소를 넣어 주세요.'
       :'예약 서버에 연결하지 못했습니다. 인터넷 연결을 확인한 뒤 "다시 시도"를 눌러 주세요.';
     warn=true;
@@ -995,7 +1014,7 @@ async function submitForm(){
   if(clash0){F.err='이 시간에는 정기 셀모임이 있습니다. 다른 시간을 골라 주세요.';showMsg(F.err);return;}
   S.busy=true;F.err='';refreshForm(false);
   try{
-    const res=await api('create',{room:room,date:date,start:start,end:end,name:name,phone:phone,parish:parish,cell:cell},'POST');
+    const res=await api('create',{room:room,date:date,start:start,end:end,name:name,phone:phone,parish:parish,cell:cell});
     if(!res||!res.ok){
       F.err=(res&&res.message)||'예약하지 못했습니다. 잠시 후 다시 시도해 주세요.';
       if(res&&res.error==='clash'){try{await loadList();}catch(e){}}
@@ -1025,7 +1044,7 @@ async function cancelRes(id){
   const body=S.admin&&S.pin?{id:id,pin:S.pin}:{id:id,phone:MINE[id]||''};
   if(!body.pin&&!body.phone){toast('이 예약은 \'내 예약/취소\' 화면에서 성함과 연락처로 조회한 뒤 취소할 수 있습니다.');return;}
   try{
-    const res=await api('cancel',body,'POST');
+    const res=await api('cancel',body);
     if(res&&res.ok){delete MINE[id];saveMine();toast('예약을 취소했습니다.');}
     else toast((res&&res.message)||'취소하지 못했습니다. 잠시 후 다시 시도해 주세요.');
     try{await loadList();}catch(e){}
@@ -1100,6 +1119,14 @@ $('sFixed').addEventListener('change',e=>{S.sFixed=e.target.checked;renderStatus
 window.addEventListener('hashchange',()=>{const v=viewFromHash();if(v==='wk'||v==='we')S.sWeek=S.date;setView(v);});
 $('myAll').addEventListener('change',e=>{S.myAll=e.target.checked;renderMy();});
 const msgBox=(id,t,ok)=>{const m=$(id);m.hidden=!t;m.textContent=t||'';m.className=ok?'okmsg':'msg';};
+$('gateForm').addEventListener('submit',e=>{
+  e.preventDefault();
+  const v=$('gateCode').value.trim();
+  if(!v){const m=$('gateMsg');m.hidden=false;m.textContent='접속 암호를 입력해 주세요.';return;}
+  CODE=v;store('ieum-code',v);
+  $('gateBtn').disabled=true;
+  connect().finally(()=>{$('gateBtn').disabled=false;});
+});
 $('mPhone').addEventListener('input',e=>{e.target.value=phoneFmt(e.target.value);});
 $('mineForm').addEventListener('submit',async e=>{
   e.preventDefault();
@@ -1108,7 +1135,7 @@ $('mineForm').addEventListener('submit',async e=>{
   if(!phoneOk(phone)){msgBox('mineMsg','연락처를 010-1234-5678 형식으로 입력해 주세요.');$('mPhone').focus();return;}
   $('mineBtn').disabled=true;msgBox('mineMsg','조회 중입니다…',true);
   try{
-    const res=await api('mine',{name:name,phone:phone},'POST');
+    const res=await api('mine',{name:name,phone:phone});
     if(!res||!res.ok){msgBox('mineMsg',(res&&res.message)||'조회하지 못했습니다. 잠시 후 다시 시도해 주세요.');return;}
     const items=parseItems(res.items);
     items.forEach(x=>{MINE[x.id]=phone;});saveMine();
@@ -1119,7 +1146,7 @@ $('mineForm').addEventListener('submit',async e=>{
   finally{$('mineBtn').disabled=false;}
 });
 async function adminLogin(pin){
-  const res=await api('adminCheck',{pin:pin},'POST');
+  const res=await api('adminCheck',{pin:pin});
   if(!res||!res.ok)return (res&&res.message)||'로그인하지 못했습니다.';
   S.admin=true;S.pin=pin;try{sessionStorage.setItem('ieum-pin',pin);}catch(e){}
   await loadList();
@@ -1178,13 +1205,14 @@ let started=false;
 async function loadList(){
   const seq=++loadSeq;
   const from=addDays(todayStr(),-dowOf(todayStr()));
-  let j=S.admin&&S.pin?await api('adminList',{from:from,pin:S.pin},'POST'):await api('list',{from:from},'GET');
+  let j=S.admin&&S.pin?await api('adminList',{from:from,pin:S.pin}):await api('list',{from:from});
   if(S.pin&&j&&j.error==='bad_pin'){
     S.admin=false;S.pin='';try{sessionStorage.removeItem('ieum-pin');}catch(e){}
-    j=await api('list',{from:from},'GET');
+    j=await api('list',{from:from});
   }
   if(seq!==loadSeq)return;
-  if(!j||!j.ok)throw new Error('list');
+  if(!j||!j.ok){const er=new Error('list');er.code=j&&j.error;throw er;}
+  $('gate').hidden=true;
   S.res=parseItems(j.items);
   const ids={};S.res.forEach(x=>{ids[x.id]=1;});
   let pruned=false;Object.keys(MINE).forEach(k=>{if(!ids[k]){delete MINE[k];pruned=true;}});
@@ -1197,9 +1225,9 @@ async function connect(){
   S.status='loading';S.why='';renderAll();
   if(!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(API_URL)){S.status='offline';S.why='noapi';renderAll();return;}
   try{
-    if(S.pin){const res=await api('adminCheck',{pin:S.pin},'POST');if(res&&res.ok)S.admin=true;else{S.pin='';try{sessionStorage.removeItem('ieum-pin');}catch(e){}}}
+    if(S.pin){const res=await api('adminCheck',{pin:S.pin});if(res&&res.ok)S.admin=true;else{S.pin='';try{sessionStorage.removeItem('ieum-pin');}catch(e){}}}
     await loadList();
-  }catch(e){S.status='offline';S.why='net';renderAll();return;}
+  }catch(e){S.status='offline';S.why=(e&&e.code==='need_code')?'code':'net';renderAll();return;}
   if(pollTimer)clearInterval(pollTimer);
   pollTimer=setInterval(()=>{
     if(document.hidden||S.busy)return;
